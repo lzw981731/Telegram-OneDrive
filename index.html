@@ -1,0 +1,114 @@
+<!--
+:project: telegram-onedrive
+:author: L-ING
+:copyright: (C) 2023 L-ING <hlf01@icloud.com>
+:license: MIT, see LICENSE for more details.
+-->
+
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegram Code</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/vue/3.5.13/vue.global.prod.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/naive-ui/2.40.4/index.prod.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/axios/1.8.4/axios.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/element-plus-icons-vue/2.3.1/index.iife.min.js"></script>
+    <style lang="text/css">
+        #app {
+            width: 400px;
+            margin: 200px auto 0 auto;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="app">
+        <n-form ref="formRef" :model="form" inline :label-width="80" :rules="rules" size="medium">
+            <n-form-item label="Telegram Code" path="code">
+                <n-input v-model:value="form.code"></n-input>
+            </n-form-item>
+            <n-form-item>
+                <n-button attr-type="button" type="info" @click="submitForm">
+                    <span v-if="!submitted">Submit</span>
+                    <n-icon v-else>
+                        <Check />
+                    </n-icon>
+                </n-button>
+            </n-form-item>
+        </n-form>
+    </div>
+</body>
+
+<script>
+    const { createApp, ref } = Vue;
+
+    const app = createApp({
+        setup() {
+            const formRef = ref();
+            const form = ref({ code: "" });
+            const submitted = ref(false);
+            const rules = {
+                code: {
+                    required: true,
+                    message: "Code is required.",
+                    trigger: ['input'],
+                },
+            };
+
+            async function validateForm() {
+                try {
+                    await formRef.value.validate();
+
+                    return true;
+                } catch (errors) {
+                    for (let error of errors)
+                        console.error(error[0].message);
+
+                    return false;
+                }
+            }
+
+            async function submitForm(e) {
+                e.preventDefault();
+
+                const isValid = await validateForm();
+
+                if (!isValid)
+                    return;
+
+                axios.post("./tg", {
+                    code: form.value.code
+                }).then(res => {
+                    form.value.code = "";
+                    submitted.value = true;
+                    setTimeout(() => submitted.value = false, 1000);
+                });
+            }
+
+            return {
+                formRef,
+                form,
+                submitted,
+                submitForm,
+                rules,
+            };
+        }
+    })
+
+    app.use(naive);
+
+    for (const [key, component] of Object.entries(ElementPlusIconsVue)) {
+        if (key === "Check") {
+            app.component(key, component);
+
+            break;
+        }
+    }
+
+    app.mount('#app');
+</script>
+
+</html>
