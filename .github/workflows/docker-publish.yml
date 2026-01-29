@@ -9,60 +9,52 @@ env:
   REPO: lzw981731/telegram-onedrive
   NAME: L-ING
   EMAIL: lzw981731@gmail.com
-  # 你的 Token
+  # 引用你的 MY_GITHUB_TOKEN
   GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
-  # 只有发布 release 时才有值
-  RELEASE_VERSION: ${{ github.event.release.name }}
-  # 通知变量
-  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.event.release.name }}
+  # 关键修复：改用 tag_name (如 v1.0.0)，防止因标题为空导致构建失败
+  RELEASE_VERSION: ${{ github.event.release.tag_name }}
+  # 自动判断标签名
+  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.event.release.tag_name }}
 
 permissions:
   contents: write
 
-run-name: ${{ github.event_name == 'workflow_dispatch' && 'build dev' || github.event.release.name }}
+run-name: ${{ github.event_name == 'workflow_dispatch' && 'build dev' || github.event.release.tag_name }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
     if: github.repository_owner == 'lzw981731'
-    
     steps:
     - name: Checkout
       uses: actions/checkout@v4
       with:
+        # 使用你的 MY_GITHUB_TOKEN 以便后续有权限推送代码
         token: ${{ env.GITHUB_TOKEN }}
         fetch-depth: 0
     
-    # -----------------------------------------------------------
-    # 第一步：修改版本号
-    # 修复：增加了 if 判断，只有正式发布 Release 时才运行此步骤
-    # -----------------------------------------------------------
+    # ----------------------------------------------------------------
+    # 1. 修改版本号 (仅 Release)
+    # ----------------------------------------------------------------
     - name: Update Version
       if: github.event_name == 'release' && github.event.action == 'published'
       run: |
+        # 打印一下版本号，方便排查
+        echo "Release Tag: $RELEASE_VERSION"
         PROJECT_NAME=$(grep '^name = ' Cargo.toml | awk -F'"' '{print $2}')
         sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.toml
         sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.lock
 
-    # -----------------------------------------------------------
-    # 第二步：提交代码 & 打标签
-    # 修复：
-    # 1. 增加了 if 判断，手动运行时直接跳过，防止报错 129
-    # 2. 增加了 git remote set-url，防止报错 terminal prompts disabled
-    # -----------------------------------------------------------
+    # ----------------------------------------------------------------
+    # 2. 提交代码 (仅 Release)
+    # ----------------------------------------------------------------
     - name: Commit and Push
       if: github.event_name == 'release' && github.event.action == 'published'
       run: |
-        # 双重保险：如果版本号为空，直接退出，绝对不报错
-        if [ -z "$RELEASE_VERSION" ]; then
-          echo "No release version found. Skipping commit."
-          exit 0
-        fi
-
         git config --global user.name $NAME
         git config --global user.email $EMAIL
         
-        # 关键修复：配置带 Token 的远程地址
+        # 关键修复：配置带 Token 的地址，解决 terminal prompts disabled 报错
         git remote set-url origin https://x-access-token:${{ env.GITHUB_TOKEN }}@github.com/${{ github.repository }}
         
         git add -A
@@ -70,6 +62,7 @@ jobs:
             echo "Bypass commit."
         else
             git commit -m "chore: update version to $RELEASE_VERSION"
+            # 强制更新标签
             git tag -f $RELEASE_VERSION
             git push origin HEAD:master
             git push origin HEAD:master --tags -f
@@ -87,34 +80,34 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
-    # -----------------------------------------------------------
-    # 第三步：构建镜像 (发布 Release 时)
-    # 标签：v1.0.0 和 latest
-    # -----------------------------------------------------------
-    - name: Build and push image (Release)
-      if: github.event_name == 'release' && github.event.action == 'published'
+    # ----------------------------------------------------------------
+    # 3. 构建发布版 (v1.0.0 + latest)
+    # ----------------------------------------------------------------
+    - name: Build and push image
       uses: docker/build-push-action@v5
+      if: github.event_name == 'release' && github.event.action == 'published'
       with:
         file: Dockerfile
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
+        # 这里的 RELEASE_VERSION 现在取的是 tag_name，绝对不会为空了
         tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
 
-    # -----------------------------------------------------------
-    # 第四步：构建镜像 (手动 Manual 时)
-    # 标签：latest (或者 dev，根据你原代码这里是 latest)
-    # -----------------------------------------------------------
-    - name: Build and push image (Manual)
-      if: github.event_name == 'workflow_dispatch'
+    # ----------------------------------------------------------------
+    # 4. 构建开发版 (手动运行)
+    # ----------------------------------------------------------------
+    - name: Build and push image dev
       uses: docker/build-push-action@v5
+      if: github.event_name == 'workflow_dispatch'
       with:
         file: Dockerfile
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
+        # 手动运行时打 latest (或按你原意打 dev)
         tags: ${{ env.REPO }}:latest
-
+    
     - name: Send Notification
       run: |
         curl -X POST -d "title=Github Actions Notification&body=$GITHUB_REPOSITORY@$TAG_NAME build completed." ${{ secrets.WEBHOOK_URL }}
