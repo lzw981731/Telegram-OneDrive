@@ -9,10 +9,10 @@ env:
   REPO: lzw981731/telegram-onedrive
   NAME: L-ING
   EMAIL: lzw981731@gmail.com
-  # 这里恢复使用你指定的 MY_GITHUB_TOKEN
+  # 你的 Token
   GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+  # 只有发布 release 时才有值，手动运行时是空的
   RELEASE_VERSION: ${{ github.event.release.name }}
-  # 通知变量：手动触发显示 latest，发布显示版本号
   TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.release.name }}
 
 permissions:
@@ -29,33 +29,33 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # 恢复：使用你的 MY_GITHUB_TOKEN
           token: ${{ env.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # 仅在发布 release 时修改版本号
+      # ----------------------------------------------------------------
+      # 第一阶段：更新版本号 & 提交代码
+      # ⚠️ 只有在【发布 Release】时才运行，手动运行时完全跳过
+      # ----------------------------------------------------------------
       - name: Update Version
+        # 下面这行 if 绝对不能删！
         if: github.event_name == 'release' && github.event.action == 'published'
         run: |
           PROJECT_NAME=$(grep '^name = ' Cargo.toml | awk -F'"' '{print $2}')
           sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.toml
           sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.lock
 
-      # 仅在发布 release 时提交代码
-      # 修复了这里：如果是手动运行，根本不会执行这一步，防止报错 129
       - name: Commit and Push
+        # 下面这行 if 绝对不能删！删了手动运行就会报错
         if: github.event_name == 'release' && github.event.action == 'published'
         run: |
-          # 双重保险：如果没有版本号，直接退出
+          # 再次检查：如果是空的，立刻停止，防止报错
           if [ -z "$RELEASE_VERSION" ]; then
-            echo "No release version found. Skipping commit."
+            echo "No release version found. Skipping."
             exit 0
           fi
 
           git config --global user.name $NAME
           git config --global user.email $EMAIL
-          
-          # 关键：使用你的 MY_GITHUB_TOKEN 进行认证
           git remote set-url origin https://x-access-token:${{ env.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           
           git add -A
@@ -68,6 +68,9 @@ jobs:
               git push origin HEAD:master --tags -f
           fi
 
+      # ----------------------------------------------------------------
+      # 第二阶段：构建 Docker 环境
+      # ----------------------------------------------------------------
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       
@@ -80,8 +83,15 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 情况1：发布 Release -> 打版本号 + latest
+      # ----------------------------------------------------------------
+      # 第三阶段：构建镜像
+      # ⚠️ 这里分成了两个情况，请不要合并它们！
+      # ----------------------------------------------------------------
+      
+      # 情况 A：【正式发布】时运行
+      # 它的标签是：版本号 + latest
       - name: Build and push image (Release)
+        # 必须有 if，防止空变量报错
         if: github.event_name == 'release' && github.event.action == 'published'
         uses: docker/build-push-action@v5
         with:
@@ -89,10 +99,13 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # 这里引用了 RELEASE_VERSION，所以必须保证有值
           tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
 
-      # 情况2：手动运行 -> 只打 latest
+      # 情况 B：【手动触发】时运行
+      # 它的标签是：只有 latest
       - name: Build and push image (Manual)
+        # 必须有 if，只在手动点按钮时运行
         if: github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
@@ -100,9 +113,9 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          # 这里绝对不能写 RELEASE_VERSION，因为它是空的！
           tags: ${{ env.REPO }}:latest
       
-      # 通知
       - name: Send Notification
         run: |
           curl -X POST -d "title=Github Actions Notification&body=$GITHUB_REPOSITORY@$TAG_NAME build completed." ${{ secrets.WEBHOOK_URL }}
