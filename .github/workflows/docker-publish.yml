@@ -11,7 +11,7 @@ env:
   EMAIL: lzw981731@gmail.com
   # 引用你的 MY_GITHUB_TOKEN
   GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
-  # 获取 Release 的 Tag (如 v1.0.0)
+  # 获取 Release 的 Tag (如 V1.0.0)
   RELEASE_VERSION: ${{ github.event.release.tag_name }}
   # 自动判断标签名
   TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.event.release.tag_name }}
@@ -38,10 +38,18 @@ jobs:
     - name: Update Version
       if: github.event_name == 'release' && github.event.action == 'published'
       run: |
-        echo "Release Tag: $RELEASE_VERSION"
+        echo "Raw Release Tag: $RELEASE_VERSION"
+        
+        # 🔥 关键修复：去掉版本号前面的 'v' 或 'V' (例如 V1.0.0 -> 1.0.0)
+        # 因为 Cargo.toml 只接受纯数字版本号
+        CLEAN_VERSION="${RELEASE_VERSION#[vV]}"
+        echo "Clean Version for Cargo: $CLEAN_VERSION"
+        
         PROJECT_NAME=$(grep '^name = ' Cargo.toml | awk -F'"' '{print $2}')
-        sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.toml
-        sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.lock
+        
+        # 使用处理过的 CLEAN_VERSION 写入 Cargo 文件
+        sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$CLEAN_VERSION\"/}" Cargo.toml
+        sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$CLEAN_VERSION\"/}" Cargo.lock
 
     # ----------------------------------------------------------------
     # 2. 提交代码 (仅 Release)
@@ -59,14 +67,13 @@ jobs:
         if git diff-index --quiet HEAD --; then
             echo "Bypass commit."
         else
+            # 提交信息还是保留原始的 tag 名 (V1.0.0) 没关系
             git commit -m "chore: update version to $RELEASE_VERSION"
             
-            # 更新本地 tag 指向最新的 commit
+            # 更新本地 tag
             git tag -f $RELEASE_VERSION
             
-            # 🔥 关键修复：
-            # 1. 把 master 改成了 main (大概率你的默认分支是这个)
-            # 2. 使用完整路径 refs/heads/main 解决 "not a full refname" 报错
+            # 推送到 main 分支
             git push origin HEAD:refs/heads/main
             git push origin HEAD:refs/heads/main --tags -f
         fi
@@ -84,7 +91,7 @@ jobs:
         password: ${{ secrets.DOCKER_PASSWORD }}
 
     # ----------------------------------------------------------------
-    # 3. 构建发布版 (v1.0.0 + latest)
+    # 3. 构建发布版 (V1.0.0 + latest)
     # ----------------------------------------------------------------
     - name: Build and push image
       uses: docker/build-push-action@v5
@@ -94,6 +101,7 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
+        # Docker 标签保留 V1.0.0 (Docker 支持带 V)
         tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
 
     # ----------------------------------------------------------------
