@@ -1,22 +1,20 @@
 name: Publish Docker
 
 on:
-  # 触发条件1：发布 Release 时
   release:
     types: [published]
-  # 触发条件2：手动点击按钮时
   workflow_dispatch:
 
 env:
-  # 请确保这里是你的 Docker Hub 仓库名
   REPO: lzw981731/telegram-onedrive
   NAME: L-ING
   EMAIL: lzw981731@gmail.com
-  # 用于通知的变量逻辑（手动触发显示 dev，发布显示版本号）
-  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.release.name }}
+  # 这里恢复使用你指定的 MY_GITHUB_TOKEN
+  GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
   RELEASE_VERSION: ${{ github.event.release.name }}
+  # 通知变量：手动触发显示 latest，发布显示版本号
+  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'latest' || github.event.release.name }}
 
-# 给 GITHUB_TOKEN 赋予写权限，解决 push 报错问题
 permissions:
   contents: write
 
@@ -25,32 +23,40 @@ run-name: ${{ github.event_name == 'workflow_dispatch' && 'Manual Build (latest)
 jobs:
   build:
     runs-on: ubuntu-latest
-    # 限制只有你的仓库能运行
     if: github.repository_owner == 'lzw981731'
     
     steps:
       - name: Checkout
         uses: actions/checkout@v4
         with:
-          # 使用系统默认 Token，必须设置 fetch-depth: 0 以便获取完整历史
-          token: ${{ secrets.GITHUB_TOKEN }}
+          # 恢复：使用你的 MY_GITHUB_TOKEN
+          token: ${{ env.GITHUB_TOKEN }}
           fetch-depth: 0
 
-      # 步骤：更新版本号 (仅在发布 Release 时运行)
+      # 仅在发布 release 时修改版本号
       - name: Update Version
+        if: github.event_name == 'release' && github.event.action == 'published'
         run: |
           PROJECT_NAME=$(grep '^name = ' Cargo.toml | awk -F'"' '{print $2}')
           sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.toml
           sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.lock
-        if: github.event_name == 'release' && github.event.action == 'published'
 
-      # 步骤：提交代码并推送到 GitHub (仅在发布 Release 时运行)
+      # 仅在发布 release 时提交代码
+      # 修复了这里：如果是手动运行，根本不会执行这一步，防止报错 129
       - name: Commit and Push
+        if: github.event_name == 'release' && github.event.action == 'published'
         run: |
+          # 双重保险：如果没有版本号，直接退出
+          if [ -z "$RELEASE_VERSION" ]; then
+            echo "No release version found. Skipping commit."
+            exit 0
+          fi
+
           git config --global user.name $NAME
           git config --global user.email $EMAIL
-          # 使用 token 强制设置远程地址，确保有权限推送
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+          
+          # 关键：使用你的 MY_GITHUB_TOKEN 进行认证
+          git remote set-url origin https://x-access-token:${{ env.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           
           git add -A
           if git diff-index --quiet HEAD --; then
@@ -61,26 +67,22 @@ jobs:
               git push origin HEAD:master
               git push origin HEAD:master --tags -f
           fi
-        if: github.event_name == 'release' && github.event.action == 'published'
 
-      # 环境准备：QEMU (用于多架构构建)
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
       
-      # 环境准备：Docker Buildx
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      # 登录 Docker Hub
       - name: Login to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      # 构建情况 1：如果是发布 Release
-      # 标签策略：打上 版本号 (v1.0.0) 和 latest
+      # 情况1：发布 Release -> 打版本号 + latest
       - name: Build and push image (Release)
+        if: github.event_name == 'release' && github.event.action == 'published'
         uses: docker/build-push-action@v5
         with:
           file: Dockerfile
@@ -88,11 +90,10 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
-        if: github.event_name == 'release' && github.event.action == 'published'
 
-      # 构建情况 2：如果是手动触发 (Manual)
-      # 标签策略：强制覆盖 latest
+      # 情况2：手动运行 -> 只打 latest
       - name: Build and push image (Manual)
+        if: github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v5
         with:
           file: Dockerfile
@@ -100,11 +101,9 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ env.REPO }}:latest
-        if: github.event_name == 'workflow_dispatch'
       
-      # 发送通知 (如果没配置 WEBHOOK_URL，这步会报错但不会影响镜像上传)
+      # 通知
       - name: Send Notification
         run: |
           curl -X POST -d "title=Github Actions Notification&body=$GITHUB_REPOSITORY@$TAG_NAME build completed." ${{ secrets.WEBHOOK_URL }}
-        # 即使通知失败也让流程显示成功
         continue-on-error: true
