@@ -11,7 +11,7 @@ env:
   EMAIL: lzw981731@gmail.com
   # 引用你的 MY_GITHUB_TOKEN
   GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
-  # 关键修复：改用 tag_name (如 v1.0.0)，防止因标题为空导致构建失败
+  # 获取 Release 的 Tag (如 v1.0.0)
   RELEASE_VERSION: ${{ github.event.release.tag_name }}
   # 自动判断标签名
   TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.event.release.tag_name }}
@@ -29,7 +29,6 @@ jobs:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        # 使用你的 MY_GITHUB_TOKEN 以便后续有权限推送代码
         token: ${{ env.GITHUB_TOKEN }}
         fetch-depth: 0
     
@@ -39,7 +38,6 @@ jobs:
     - name: Update Version
       if: github.event_name == 'release' && github.event.action == 'published'
       run: |
-        # 打印一下版本号，方便排查
         echo "Release Tag: $RELEASE_VERSION"
         PROJECT_NAME=$(grep '^name = ' Cargo.toml | awk -F'"' '{print $2}')
         sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.toml
@@ -54,7 +52,7 @@ jobs:
         git config --global user.name $NAME
         git config --global user.email $EMAIL
         
-        # 关键修复：配置带 Token 的地址，解决 terminal prompts disabled 报错
+        # 配置带 Token 的地址
         git remote set-url origin https://x-access-token:${{ env.GITHUB_TOKEN }}@github.com/${{ github.repository }}
         
         git add -A
@@ -62,10 +60,15 @@ jobs:
             echo "Bypass commit."
         else
             git commit -m "chore: update version to $RELEASE_VERSION"
-            # 强制更新标签
+            
+            # 更新本地 tag 指向最新的 commit
             git tag -f $RELEASE_VERSION
-            git push origin HEAD:master
-            git push origin HEAD:master --tags -f
+            
+            # 🔥 关键修复：
+            # 1. 把 master 改成了 main (大概率你的默认分支是这个)
+            # 2. 使用完整路径 refs/heads/main 解决 "not a full refname" 报错
+            git push origin HEAD:refs/heads/main
+            git push origin HEAD:refs/heads/main --tags -f
         fi
 
     - name: Set up QEMU
@@ -91,7 +94,6 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
-        # 这里的 RELEASE_VERSION 现在取的是 tag_name，绝对不会为空了
         tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
 
     # ----------------------------------------------------------------
@@ -105,7 +107,6 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
-        # 手动运行时打 latest (或按你原意打 dev)
         tags: ${{ env.REPO }}:latest
     
     - name: Send Notification
