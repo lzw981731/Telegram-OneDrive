@@ -71,7 +71,8 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest,${{ env.REPO }}:dev
+       # tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest,${{ env.REPO }}:dev
+        tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
       if: github.event_name == 'release' && github.event.action == 'published'
 
     - name: Build and push image dev
@@ -81,7 +82,8 @@ jobs:
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
-        tags: ${{ env.REPO }}:dev
+       # tags: ${{ env.REPO }}:dev
+        tags: ${{ env.REPO }}:latest
       if: github.event_name == 'workflow_dispatch'
     
     - name: Send Notification
