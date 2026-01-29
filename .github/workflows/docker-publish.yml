@@ -9,14 +9,13 @@ env:
   REPO: lzw981731/telegram-onedrive
   NAME: L-ING
   EMAIL: lzw981731@gmail.com
-  # 这里引用你的 Token
+  # 你的 Token
   GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
-  # 自动获取 Release 版本号 (例如 v1.0.0)
+  # 只有发布 release 时才有值
   RELEASE_VERSION: ${{ github.event.release.name }}
-  # 手动触发时叫 dev，发布时叫版本号
+  # 通知变量
   TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.event.release.name }}
 
-# 这里的权限给 write，配合后面的 Token 使用
 permissions:
   contents: write
 
@@ -26,30 +25,44 @@ jobs:
   build:
     runs-on: ubuntu-latest
     if: github.repository_owner == 'lzw981731'
+    
     steps:
     - name: Checkout
       uses: actions/checkout@v4
       with:
-        # 修正1：这里统一使用你的 MY_GITHUB_TOKEN，确保有权限回写代码
         token: ${{ env.GITHUB_TOKEN }}
         fetch-depth: 0
     
+    # -----------------------------------------------------------
+    # 第一步：修改版本号
+    # 修复：增加了 if 判断，只有正式发布 Release 时才运行此步骤
+    # -----------------------------------------------------------
     - name: Update Version
-      # 严谨判断：只有发布 Release 时才修改文件，手动运行不改
       if: github.event_name == 'release' && github.event.action == 'published'
       run: |
         PROJECT_NAME=$(grep '^name = ' Cargo.toml | awk -F'"' '{print $2}')
         sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.toml
         sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$RELEASE_VERSION\"/}" Cargo.lock
 
+    # -----------------------------------------------------------
+    # 第二步：提交代码 & 打标签
+    # 修复：
+    # 1. 增加了 if 判断，手动运行时直接跳过，防止报错 129
+    # 2. 增加了 git remote set-url，防止报错 terminal prompts disabled
+    # -----------------------------------------------------------
     - name: Commit and Push
-      # 严谨判断：只有发布 Release 时才提交代码
       if: github.event_name == 'release' && github.event.action == 'published'
       run: |
+        # 双重保险：如果版本号为空，直接退出，绝对不报错
+        if [ -z "$RELEASE_VERSION" ]; then
+          echo "No release version found. Skipping commit."
+          exit 0
+        fi
+
         git config --global user.name $NAME
         git config --global user.email $EMAIL
         
-        # 修正2：必须配置带 Token 的远程地址，否则会报 403 或 terminal prompts disabled
+        # 关键修复：配置带 Token 的远程地址
         git remote set-url origin https://x-access-token:${{ env.GITHUB_TOKEN }}@github.com/${{ github.repository }}
         
         git add -A
@@ -74,10 +87,13 @@ jobs:
         username: ${{ secrets.DOCKER_USERNAME }}
         password: ${{ secrets.DOCKER_PASSWORD }}
 
+    # -----------------------------------------------------------
+    # 第三步：构建镜像 (发布 Release 时)
+    # 标签：v1.0.0 和 latest
+    # -----------------------------------------------------------
     - name: Build and push image (Release)
-      uses: docker/build-push-action@v5
-      # 只有发布 Release 时运行，打上 v1.0.0 和 latest 标签
       if: github.event_name == 'release' && github.event.action == 'published'
+      uses: docker/build-push-action@v5
       with:
         file: Dockerfile
         context: .
@@ -85,17 +101,21 @@ jobs:
         push: true
         tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
 
-    - name: Build and push image (Manual/Dev)
-      uses: docker/build-push-action@v5
-      # 只有手动运行时运行，只打 latest 标签
+    # -----------------------------------------------------------
+    # 第四步：构建镜像 (手动 Manual 时)
+    # 标签：latest (或者 dev，根据你原代码这里是 latest)
+    # -----------------------------------------------------------
+    - name: Build and push image (Manual)
       if: github.event_name == 'workflow_dispatch'
+      uses: docker/build-push-action@v5
       with:
         file: Dockerfile
         context: .
         platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ env.REPO }}:latest
-    
+
     - name: Send Notification
       run: |
         curl -X POST -d "title=Github Actions Notification&body=$GITHUB_REPOSITORY@$TAG_NAME build completed." ${{ secrets.WEBHOOK_URL }}
+      continue-on-error: true
