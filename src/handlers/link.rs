@@ -34,7 +34,10 @@ pub async fn handler(message: TelegramMessage, state: AppState) -> Result<()> {
         return Ok(());
     }
 
-    let message_origin = get_message_from_link(telegram_user, link).await?;
+    let message_origin = match get_message_from_link(telegram_user, link).await {
+        Ok(m) => m,
+        Err(_) => return Ok(()),
+    };
 
     let chat_user = telegram_user
         .get_chat(&ChatEntity::from(message.chat()))
