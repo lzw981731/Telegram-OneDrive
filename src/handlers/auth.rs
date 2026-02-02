@@ -26,17 +26,27 @@ pub async fn handler(message: TelegramMessage, state: AppState) -> Result<()> {
 
     login_to_telegram(message.clone(), state.clone(), rx_tg, &mut messages_to_delete).await?;
 
+    // Wait 10 seconds after Telegram login success, then delete telegram auth messages
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    for msg_id in messages_to_delete.drain(..) {
+        state.telegram_bot.delete_messages(message.chat(), &[msg_id]).await.ok();
+    }
+
     authorize_onedrive(message.clone(), state.clone(), false, rx_od, &mut messages_to_delete).await?;
 
     let onedrive = &state.onedrive;
     onedrive.set_current_user().await?;
+
+    // Success response
+    let response = "OneDrive 授权成功！";
+    message.respond(response).await.context(response)?;
 
     {
         *state.auth_tx_tg.lock().await = None;
         *state.auth_tx_od.lock().await = None;
     }
 
-    // Delete all collected bot messages and the initial /auth command
+    // Delete all remaining messages (onedrive auth related)
     for msg_id in messages_to_delete {
         state.telegram_bot.delete_messages(message.chat(), &[msg_id]).await.ok();
     }
@@ -72,10 +82,6 @@ pub async fn authorize_onedrive(
     let onedrive = &state.onedrive;
 
     onedrive.login(message.clone(), should_add, rx, Some(messages_to_delete)).await?;
-
-    let response = "OneDrive 授权成功！";
-    let msg = message.respond(response).await.context(response)?;
-    messages_to_delete.push(msg.id());
 
     Ok(())
 }

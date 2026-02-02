@@ -110,33 +110,56 @@ impl OneDriveClient {
             tracing::info!("onedrive auto login failed, login manually");
         }
 
-        let response = format!(
-            "这是 OneDrive 的授权链接：\n\n{}",
-            self.get_auth_url()
-        );
-        let msg = message.respond(response.as_str()).await.context(response)?;
-        if let Some(vec) = messages_to_delete.as_mut() {
-            vec.push(msg.id());
+        loop {
+            let response = format!(
+                "这是 OneDrive 的授权链接：\n\n{}",
+                self.get_auth_url()
+            );
+            let msg = message.respond(response.as_str()).await.context(response)?;
+            if let Some(vec) = messages_to_delete.as_mut() {
+                vec.push(msg.id());
+            }
+
+            tracing::info!("onedrive authorization url sent");
+
+            let code = rx
+                .recv()
+                .await
+                .ok_or_else(|| anyhow!("failed to receive onedrive code"))?;
+
+            tracing::info!("onedrive code received");
+            tracing::debug!("onedrive code: {}", code);
+
+            let response = "已收到验证码，正在授权...";
+            let msg = message.respond(response).await.context(response)?;
+            if let Some(vec) = messages_to_delete.as_mut() {
+                vec.push(msg.id());
+            }
+
+            tracing::info!("onedrive authorizing");
+
+            match self.authorize(&code).await {
+                Ok(_) => {
+                    tracing::info!("onedrive authorized");
+
+                    self.save().await.context("failed to save onedrive account")?;
+
+                    return Ok(());
+                }
+                Err(e) => {
+                    tracing::error!("failed to authorize onedrive: {:?}", e);
+                    let response = "验证失败，请重新提交链接。";
+                    let msg = message.respond(response).await.context(response)?;
+                    if let Some(vec) = messages_to_delete.as_mut() {
+                        vec.push(msg.id());
+                    }
+                    // Loop back to ask for link again
+                }
+            }
         }
+    }
 
-        tracing::info!("onedrive authorization url sent");
-
-        let code = rx
-            .recv()
-            .await
-            .ok_or_else(|| anyhow!("failed to receive onedrive code"))?;
-
-        tracing::info!("onedrive code received");
-        tracing::debug!("onedrive code: {}", code);
-
-        let response = "已收到验证码，正在授权...";
-        let msg = message.respond(response).await.context(response)?;
-        if let Some(vec) = messages_to_delete.as_mut() {
-            vec.push(msg.id());
-        }
-
-        tracing::info!("onedrive authorizing");
-
+    async fn authorize(&self, code: &str) -> Result<()> {
         let TokenResponse {
             expires_in_secs,
             access_token,
@@ -144,7 +167,7 @@ impl OneDriveClient {
             ..
         } = self
             .auth_provider
-            .login_with_code(&code, &ClientCredential::Secret(self.client_secret.clone()))
+            .login_with_code(code, &ClientCredential::Secret(self.client_secret.clone()))
             .await
             .context("failed to get onedrive token response when login with code")?;
 

@@ -163,71 +163,78 @@ impl TelegramClient {
 
             let client = self.raw();
 
-            let response = "正在发送 Telegram 登录验证码...\n这可能需要一点时间。";
-            let msg = message.respond(response).await.context(response)?;
-            if let Some(vec) = messages_to_delete.as_mut() {
-                vec.push(msg.id());
-            }
-
-            let token = client
-                .request_login_code(phone_number)
-                .await
-                .context("failed to request telegram user login code")?;
-
-            let response = format!(
-                "请访问 {} 输入验证码以登录 Telegram。",
-                server_uri
-            );
-            let msg = message.respond(response.as_str()).await.context(response)?;
-            if let Some(vec) = messages_to_delete.as_mut() {
-                vec.push(msg.id());
-            }
-
             loop {
-                let code = rx
-                    .recv()
-                    .await
-                    .ok_or_else(|| anyhow!("failed to receive telegram code"))?;
-
-                let response = "已收到验证码，正在登录...";
+                let response = "正在发送 Telegram 登录验证码...";
                 let msg = message.respond(response).await.context(response)?;
                 if let Some(vec) = messages_to_delete.as_mut() {
                     vec.push(msg.id());
                 }
 
-                match client.sign_in(&token, &code).await {
-                    Ok(_) => {
-                        break;
+                let token = client
+                    .request_login_code(phone_number)
+                    .await
+                    .context("failed to request telegram user login code")?;
+
+                let response = format!(
+                    "请访问 {} 输入验证码以登录 Telegram。\n也可以直接回复验证码给机器人。",
+                    server_uri
+                );
+                let msg = message.respond(response.as_str()).await.context(response)?;
+                if let Some(vec) = messages_to_delete.as_mut() {
+                    vec.push(msg.id());
+                }
+
+                loop {
+                    let code = rx
+                        .recv()
+                        .await
+                        .ok_or_else(|| anyhow!("failed to receive telegram code"))?;
+
+                    let response = "已收到验证码，正在登录...";
+                    let msg = message.respond(response).await.context(response)?;
+                    if let Some(vec) = messages_to_delete.as_mut() {
+                        vec.push(msg.id());
                     }
-                    Err(SignInError::PasswordRequired(password_token)) => match password {
-                        Some(password) => {
+
+                    match client.sign_in(&token, &code).await {
+                        Ok(_) => {
                             client
-                                .check_password(password_token, password)
-                                .await
-                                .context("failed to pass telegram user 2FA")?;
+                                .session()
+                                .save_to_file(session_path)
+                                .context("failed to save session for telegram user client")?;
+                            return Ok(());
+                        }
+                        Err(SignInError::PasswordRequired(password_token)) => match password {
+                            Some(password) => {
+                                client
+                                    .check_password(password_token, password)
+                                    .await
+                                    .context("failed to pass telegram user 2FA")?;
 
-                            break;
+                                client
+                                    .session()
+                                    .save_to_file(session_path)
+                                    .context("failed to save session for telegram user client")?;
+                                return Ok(());
+                            }
+                            None => Err(anyhow!("password for telegram user 2FA required"))?,
+                        },
+                        Err(SignInError::InvalidCode) => {
+                            let response = "验证码无效，请重新输入。";
+                            let msg = message.respond(response).await.context(response)?;
+                            if let Some(vec) = messages_to_delete.as_mut() {
+                                vec.push(msg.id());
+                            }
+                            // User wants to re-send the code on invalid input
+                            break; 
                         }
-                        None => Err(anyhow!("password for telegram user 2FA required"))?,
-                    },
-                    Err(SignInError::InvalidCode) => {
-                        let msg = message.respond("验证码无效，请重新输入。").await?;
-                        if let Some(vec) = messages_to_delete.as_mut() {
-                            vec.push(msg.id());
+                        Err(e) => {
+                            return Err(e).context("failed to sign in telegram user");
                         }
-                    }
-                    Err(e) => {
-                        return Err(e).context("failed to sign in telegram user");
-                    }
-                };
+                    };
+                }
             }
-
-            client
-                .session()
-                .save_to_file(session_path)
-                .context("failed to save session for telegram user client")?;
         }
-
         Ok(())
     }
 

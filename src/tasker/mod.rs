@@ -198,7 +198,14 @@ async fn handler_dispatch(
                 .await?;
 
             if task_aborter_exists {
-                if task.auto_delete {
+                let has_open_list = ENV.get().unwrap().open_list.is_some();
+
+                if has_open_list {
+                    // If OpenList is set, we ALWAYS show the completion message with the link
+                    // regardless of the auto_delete setting, as per user request.
+                    handle_completed_task(task.clone(), state.clone()).await?;
+                } else if task.auto_delete {
+                    // Standard auto_delete logic if OpenList is NOT set
                     let chat_bot = chat_from_hex(&task.chat_bot_hex)?;
                     let chat_user = chat_from_hex(&task.chat_user_hex)?;
 
@@ -253,21 +260,26 @@ async fn handle_completed_task(task: tasks::Model, state: AppState) -> Result<()
         .get_message(chat_bot, task.message_indicator_id)
         .await?;
 
-    let mut response = format!(
-        "{}\n\n完成。\n文件已上传至 {}\n大小 {:.2}MB。",
-        message_indicator.text(),
-        file_path,
-        task.total_length as f64 / 1024.0 / 1024.0
-    );
+    let mut response = String::new();
 
     if let Some(open_list) = &ENV.get().unwrap().open_list {
+        // Mode 1: OpenList set
+        response.push_str("文件上传成功。");
         let download_url = if open_list.ends_with('/') {
             format!("{}{}", open_list, task.filename)
         } else {
             format!("{}/{}", open_list, task.filename)
         };
-        response.push_str(&format!("\n{}", download_url));
+        response.push_str(&format!("\n下载链接: {}", download_url));
+
+        // Withdraw/Delete other conversations (the user's original message)
+        let chat_user = chat_from_hex(&task.chat_user_hex)?;
+        state.telegram_user.delete_messages(chat_user, &[task.message_id]).await.ok();
+    } else {
+        // Mode 2: OpenList NOT set
+        response.push_str(&format!("文件已成功上传至 {}", file_path));
     }
+
     message_indicator
         .edit(task.message_indicator_id, InputMessage::html(&response))
         .await
