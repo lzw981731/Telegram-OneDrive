@@ -90,7 +90,7 @@ impl<'h> Handler<'h> {
 
         // Check for OneDrive Auth URL
         if text.contains("code=") {
-            let mut tx_od = self.state.auth_tx_od.lock().await;
+            let tx_od = self.state.auth_tx_od.lock().await;
             if let Some(tx) = tx_od.as_ref() {
                 let code = if let Some(idx) = text.find("code=") {
                     let start = idx + 5;
@@ -108,7 +108,7 @@ impl<'h> Handler<'h> {
         }
 
         // Check for Telegram login code
-        let mut tx_tg = self.state.auth_tx_tg.lock().await;
+        let tx_tg = self.state.auth_tx_tg.lock().await;
         if let Some(tx) = tx_tg.as_ref() {
             if tx.send(text.to_string()).await.is_ok() {
                 message.delete().await.ok();
