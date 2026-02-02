@@ -280,10 +280,13 @@ async fn handle_completed_task(task: tasks::Model, state: AppState) -> Result<()
         response.push_str(&format!("文件已成功上传至 {}", file_path));
     }
 
-    message_indicator
-        .edit(task.message_indicator_id, InputMessage::html(&response))
+    if let Err(e) = message_indicator
+        .edit(message_indicator.id(), InputMessage::html(&response))
         .await
-        .context(response)?;
+    {
+        tracing::warn!("Failed to edit indicator message: {:?}, falling back to respond", e);
+        message_indicator.respond(InputMessage::html(&response)).await.ok();
+    }
 
     Ok(())
 }
@@ -297,11 +300,11 @@ async fn handle_failed_task(task: tasks::Model, state: AppState) -> Result<()> {
         .get_message(chat_bot, task.message_indicator_id)
         .await?;
 
-    let response = format!("{}\n\n失败。", message_indicator.text());
+    let response = format!("文件转存失败。");
     message_indicator
-        .edit(task.message_id, InputMessage::html(&response))
+        .edit(message_indicator.id(), InputMessage::html(&response))
         .await
-        .context(response)?;
+        .ok();
 
     Ok(())
 }
