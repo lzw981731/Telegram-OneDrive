@@ -84,16 +84,17 @@ impl<'h> Handler<'h> {
         let text = message.text();
         let text = text.trim();
 
+        if text.is_empty() || text.starts_with('/') {
+            return Ok(false);
+        }
+
         // Check for OneDrive Auth URL
         if text.contains("code=") {
             let mut tx_od = self.state.auth_tx_od.lock().await;
             if let Some(tx) = tx_od.as_ref() {
                 let code = if let Some(idx) = text.find("code=") {
                     let start = idx + 5;
-                    let end = text[start..]
-                        .find('&')
-                        .map(|i| start + i)
-                        .unwrap_or(text.len());
+                    let end = text[start..].find('&').map(|i| start + i).unwrap_or(text.len());
                     text[start..end].to_string()
                 } else {
                     text.to_string()
@@ -109,11 +110,9 @@ impl<'h> Handler<'h> {
         // Check for Telegram login code
         let mut tx_tg = self.state.auth_tx_tg.lock().await;
         if let Some(tx) = tx_tg.as_ref() {
-            if !text.is_empty() && !text.starts_with('/') {
-                if tx.send(text.to_string()).await.is_ok() {
-                    message.delete().await.ok();
-                    return Ok(true);
-                }
+            if tx.send(text.to_string()).await.is_ok() {
+                message.delete().await.ok();
+                return Ok(true);
             }
         }
 

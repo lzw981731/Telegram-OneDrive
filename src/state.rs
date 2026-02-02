@@ -11,7 +11,8 @@ use crate::{
     error::ResultExt,
     tasker::TaskSession,
 };
-use tokio::sync::{atomic::AtomicBool, mpsc::Sender, Mutex, Arc};
+use std::sync::{atomic::AtomicBool, Arc};
+use tokio::sync::{mpsc::Sender, Mutex};
 
 pub struct State {
     pub telegram_bot: TelegramClient,

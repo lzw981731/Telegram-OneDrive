@@ -110,8 +110,9 @@ gen_checker!(check_tg_login, {
         let response = "You haven't logged in to Telegram.";
         message.respond(response).await.context(response)?;
 
-        let (rx, _, _server_abort_handle) = crate::auth_server::spawn().await?;
-        crate::handlers::auth::login_to_telegram(message.clone(), state.clone(), rx).await?;
+        let (_, _, rx, _, _server_abort_handle) = crate::auth_server::spawn().await?;
+        let mut messages_to_delete = Vec::new();
+        crate::handlers::auth::login_to_telegram(message.clone(), state.clone(), rx, &mut messages_to_delete).await?;
     }
 });
 
@@ -122,8 +123,9 @@ gen_checker!(check_od_login, {
         let response = "You haven't authorize OneDrive.";
         message.respond(response).await.context(response)?;
 
-        let (_, rx, _server_abort_handle) = crate::auth_server::spawn().await?;
-        crate::handlers::auth::authorize_onedrive(message.clone(), state.clone(), false, rx)
+        let (_, _, _, rx, _server_abort_handle) = crate::auth_server::spawn().await?;
+        let mut messages_to_delete = Vec::new();
+        crate::handlers::auth::authorize_onedrive(message.clone(), state.clone(), false, rx, &mut messages_to_delete)
             .await?;
     }
 });
