@@ -1,0 +1,208 @@
+/*
+:project: telegram-onedrive
+:author: L-ING
+:copyright: (C) 2024 L-ING <hlf01@icloud.com>
+:license: MIT, see LICENSE for more details.
+*/
+
+use super::{EventType, Events};
+use crate::{
+    error::{ErrorExt, ResultUnwrapExt},
+    message::{ChatEntity, TelegramMessage},
+    state::AppState,
+    tasker::BatchAborter,
+};
+use anyhow::{anyhow, Context, Result};
+use grammers_client::types::Media;
+
+pub struct Handler<'h> {
+    pub events: &'h Events,
+    pub state: AppState,
+}
+
+impl<'h> Handler<'h> {
+    pub fn new(events: &'h Events, state: AppState) -> Self {
+        Self { events, state }
+    }
+
+    pub async fn handle_message(&self, message: TelegramMessage) -> Result<()> {
+        match message.media() {
+            Some(media) => match media {
+                Media::Document(document) if document.name().to_lowercase().ends_with(".t2o") => {
+                    self.handle_batch(message).await?;
+                }
+                Media::Photo(_) | Media::Document(_) | Media::Sticker(_) => {
+                    self.handle_media(message).await?;
+                }
+                // sending a task with a link may cause the text being wrapped as a web page
+                Media::WebPage(_) => self.handle_text(message).await?,
+                _ => tracing::debug!("unsupported media type when handle message"),
+            },
+            None => self.handle_text(message).await?,
+        }
+
+        Ok(())
+    }
+
+    async fn handle_command(&self, message: TelegramMessage) -> Result<()> {
+        let text = message.text();
+
+        for event in self.get_event_names() {
+            if text.starts_with(event.to_str()) {
+                tracing::info!("handle command {}", event);
+
+                self.trigger(event, message).await?;
+                break;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_text(&self, message: TelegramMessage) -> Result<()> {
+        let text = message.text();
+        let text = text.trim();
+
+        if !text.is_empty() {
+            if self.handle_auth_code(message.clone()).await? {
+                return Ok(());
+            }
+
+            if text.starts_with('/') {
+                self.handle_command(message.clone()).await?;
+            } else {
+                tracing::info!("handle text");
+
+                self.trigger(EventType::Text, message.clone()).await?;
+            }
+        }
+
+        Ok(())
+    }
+
+    async fn handle_auth_code(&self, message: TelegramMessage) -> Result<bool> {
+        let text = message.text();
+        let text = text.trim();
+
+        // Check for OneDrive Auth URL
+        if text.contains("code=") {
+            let mut tx_od = self.state.auth_tx_od.lock().await;
+            if let Some(tx) = tx_od.as_ref() {
+                let code = if let Some(idx) = text.find("code=") {
+                    let start = idx + 5;
+                    let end = text[start..]
+                        .find('&')
+                        .map(|i| start + i)
+                        .unwrap_or(text.len());
+                    text[start..end].to_string()
+                } else {
+                    text.to_string()
+                };
+
+                if !code.is_empty() && tx.send(code).await.is_ok() {
+                    message.delete().await.ok();
+                    return Ok(true);
+                }
+            }
+        }
+
+        // Check for Telegram login code
+        let mut tx_tg = self.state.auth_tx_tg.lock().await;
+        if let Some(tx) = tx_tg.as_ref() {
+            if !text.is_empty() && !text.starts_with('/') {
+                if tx.send(text.to_string()).await.is_ok() {
+                    message.delete().await.ok();
+                    return Ok(true);
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn handle_media(&self, message: TelegramMessage) -> Result<()> {
+        tracing::info!("handle media");
+
+        self.trigger(EventType::Media, message).await
+    }
+
+    async fn handle_batch(&self, message: TelegramMessage) -> Result<()> {
+        tracing::info!("handle batch");
+
+        let telegram_user = self.state.telegram_user.clone();
+
+        let chat_user = telegram_user
+            .get_chat(&ChatEntity::from(message.chat()))
+            .await?;
+
+        let message_user = telegram_user.get_message(&chat_user, message.id()).await?;
+
+        let media = message_user
+            .media()
+            .ok_or_else(|| anyhow!("message does not contain any media"))?;
+
+        let mut download = telegram_user.iter_download(&media);
+        let mut batch_bytes = Vec::new();
+        while let Some(chunk) = download
+            .next()
+            .await
+            .context("failed to get next chunk from tg file downloader")?
+        {
+            batch_bytes.extend(chunk);
+        }
+
+        let batch = String::from_utf8(batch_bytes).context("failed to parse batch")?;
+        let batch = batch.trim();
+
+        let mut batch_aborters = self.state.task_session.batch_aborters.lock().await;
+        let batch_aborter = BatchAborter::new();
+        let cancellation_token = batch_aborter.token.clone();
+        batch_aborters.insert((chat_user.id(), message.id()), batch_aborter);
+        // allow cancellation
+        drop(batch_aborters);
+
+        let fut = async {
+            for (i, line) in batch.split('\n').enumerate() {
+                let detail = format!("line {}: {}", i + 1, line);
+
+                let mut message_clone = message.clone();
+                message_clone.override_text(line.to_string());
+
+                if let Err(e) = self
+                    .handle_text(message_clone)
+                    .await
+                    .context("failed to send command in batch")
+                    .context(detail)
+                {
+                    e.send(message.clone()).await.unwrap_both().trace();
+
+                    continue;
+                }
+            }
+        };
+
+        tokio::select! {
+            () = fut => {}
+            () = cancellation_token.cancelled() => {}
+        }
+
+        let mut batch_aborters = self.state.task_session.batch_aborters.lock().await;
+        if let Some(batch_aborter) = batch_aborters.get_mut(&(chat_user.id(), message.id())) {
+            batch_aborter.processing = false;
+        }
+
+        Ok(())
+    }
+
+    async fn trigger(&self, event_name: EventType, message: TelegramMessage) -> Result<()> {
+        if let Some(callback) = self.events.get(event_name.to_str()) {
+            callback(message, self.state.clone()).await?;
+        }
+
+        Ok(())
+    }
+
+    fn get_event_names(&self) -> Vec<EventType> {
+        self.events.keys().map(EventType::from).collect()
+    }
+}

@@ -1,0 +1,123 @@
+name: Publish Docker
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+env:
+  REPO: lzw981731/telegram-onedrive
+  NAME: L-ING
+  EMAIL: lzw981731@gmail.com
+  # 引用你的 MY_GITHUB_TOKEN
+  GITHUB_TOKEN: ${{ secrets.MY_GITHUB_TOKEN }}
+  # 获取 Release 的 Tag (如 V1.0.0)
+  RELEASE_VERSION: ${{ github.event.release.tag_name }}
+  # 自动判断标签名
+  TAG_NAME: ${{ github.event_name == 'workflow_dispatch' && 'dev' || github.event.release.tag_name }}
+
+permissions:
+  contents: write
+
+run-name: ${{ github.event_name == 'workflow_dispatch' && 'build dev' || github.event.release.tag_name }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    if: github.repository_owner == 'lzw981731'
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        token: ${{ env.GITHUB_TOKEN }}
+        fetch-depth: 0
+    
+    # ----------------------------------------------------------------
+    # 1. 修改版本号 (仅 Release)
+    # ----------------------------------------------------------------
+    - name: Update Version
+      if: github.event_name == 'release' && github.event.action == 'published'
+      run: |
+        echo "Raw Release Tag: $RELEASE_VERSION"
+        
+        # 🔥 关键修复：去掉版本号前面的 'v' 或 'V' (例如 V1.0.0 -> 1.0.0)
+        # 因为 Cargo.toml 只接受纯数字版本号
+        CLEAN_VERSION="${RELEASE_VERSION#[vV]}"
+        echo "Clean Version for Cargo: $CLEAN_VERSION"
+        
+        PROJECT_NAME=$(grep '^name = ' Cargo.toml | awk -F'"' '{print $2}')
+        
+        # 使用处理过的 CLEAN_VERSION 写入 Cargo 文件
+        sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$CLEAN_VERSION\"/}" Cargo.toml
+        sed -i "/^name = \"$PROJECT_NAME\"$/{N; s/version = \".*\"/version = \"$CLEAN_VERSION\"/}" Cargo.lock
+
+    # ----------------------------------------------------------------
+    # 2. 提交代码 (仅 Release)
+    # ----------------------------------------------------------------
+    - name: Commit and Push
+      if: github.event_name == 'release' && github.event.action == 'published'
+      run: |
+        git config --global user.name $NAME
+        git config --global user.email $EMAIL
+        
+        # 配置带 Token 的地址
+        git remote set-url origin https://x-access-token:${{ env.GITHUB_TOKEN }}@github.com/${{ github.repository }}
+        
+        git add -A
+        if git diff-index --quiet HEAD --; then
+            echo "Bypass commit."
+        else
+            # 提交信息还是保留原始的 tag 名 (V1.0.0) 没关系
+            git commit -m "chore: update version to $RELEASE_VERSION"
+            
+            # 更新本地 tag
+            git tag -f $RELEASE_VERSION
+            
+            # 推送到 main 分支
+            git push origin HEAD:refs/heads/main
+            git push origin HEAD:refs/heads/main --tags -f
+        fi
+
+    - name: Set up QEMU
+      uses: docker/setup-qemu-action@v3
+    
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Login to DockerHub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    # ----------------------------------------------------------------
+    # 3. 构建发布版 (V1.0.0 + latest)
+    # ----------------------------------------------------------------
+    - name: Build and push image
+      uses: docker/build-push-action@v5
+      if: github.event_name == 'release' && github.event.action == 'published'
+      with:
+        file: Dockerfile
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        # Docker 标签保留 V1.0.0 (Docker 支持带 V)
+        tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
+
+    # ----------------------------------------------------------------
+    # 4. 构建开发版 (手动运行)
+    # ----------------------------------------------------------------
+    - name: Build and push image dev
+      uses: docker/build-push-action@v5
+      if: github.event_name == 'workflow_dispatch'
+      with:
+        file: Dockerfile
+        context: .
+        platforms: linux/amd64,linux/arm64
+        push: true
+        tags: ${{ env.REPO }}:latest
+    
+    - name: Send Notification
+      run: |
+        curl -X POST -d "title=Github Actions Notification&body=$GITHUB_REPOSITORY@$TAG_NAME build completed." ${{ secrets.WEBHOOK_URL }}
+      continue-on-error: true
