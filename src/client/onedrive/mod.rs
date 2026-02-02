@@ -142,7 +142,7 @@ impl OneDriveClient {
                 Ok(_) => {
                     tracing::info!("onedrive authorized");
 
-                    self.save().await.context("failed to save onedrive account")?;
+                    self.session.read().await.save().await.context("failed to save onedrive account")?;
 
                     return Ok(());
                 }
