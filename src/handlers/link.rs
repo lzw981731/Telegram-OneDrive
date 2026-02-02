@@ -28,8 +28,13 @@ pub async fn handler(message: TelegramMessage, state: AppState) -> Result<()> {
     let task_session = &state.task_session;
 
     let link = message.text();
+    let link = link.trim();
 
-    let message_origin = get_message_from_link(telegram_user, &link).await?;
+    if !link.starts_with("https://t.me/") {
+        return Ok(());
+    }
+
+    let message_origin = get_message_from_link(telegram_user, link).await?;
 
     let chat_user = telegram_user
         .get_chat(&ChatEntity::from(message.chat()))
