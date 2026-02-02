@@ -37,19 +37,24 @@ pub async fn handler(message: TelegramMessage, state: AppState) -> Result<()> {
     let onedrive = &state.onedrive;
     onedrive.set_current_user().await?;
 
+    // Delete auth process messages immediately
+    for msg_id in messages_to_delete.drain(..) {
+        state.telegram_bot.delete_messages(message.chat(), &[msg_id]).await.ok();
+    }
+
     // Success response
     let response = "OneDrive 授权成功！";
-    message.respond(response).await.context(response)?;
+    let success_msg = message.respond(response).await.context(response)?;
 
     {
         *state.auth_tx_tg.lock().await = None;
         *state.auth_tx_od.lock().await = None;
     }
 
-    // Delete all remaining messages (onedrive auth related)
-    for msg_id in messages_to_delete {
-        state.telegram_bot.delete_messages(message.chat(), &[msg_id]).await.ok();
-    }
+    // Wait 10 seconds before cleaning up the final success message and the command
+    tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+    
+    state.telegram_bot.delete_messages(message.chat(), &[success_msg.id()]).await.ok();
     message.delete().await.ok();
 
     Ok(())
