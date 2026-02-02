@@ -103,6 +103,8 @@ jobs:
         push: true
         # Docker 标签保留 V1.0.0 (Docker 支持带 V)
         tags: ${{ env.REPO }}:${{ env.RELEASE_VERSION }},${{ env.REPO }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
 
     # ----------------------------------------------------------------
     # 4. 构建开发版 (手动运行)
@@ -116,6 +118,8 @@ jobs:
         platforms: linux/amd64,linux/arm64
         push: true
         tags: ${{ env.REPO }}:latest
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
     
     - name: Send Notification
       run: |
